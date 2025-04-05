@@ -361,3 +361,24 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+### Custom ###
+# Конфиги с секретами (ASP.NET Core / .NET)
+appsettings.json
+appsettings.*.json
+!appsettings.example.json  # Шаблон без секретов (если нужен)
+secrets.json
+
+# Файлы пользовательских секретов (User Secrets)
+**/secrets.json
+
+# Локальные БД (SQLite, SQL Server Compact)
+*.db
+*.mdf
+*.ldf
+*.sdf
+
+# Файлы окружения (env-файлы)
+.env
+*.env
+/.gitignore
