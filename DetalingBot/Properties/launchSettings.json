@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "DetalingBot": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "DB_PASSWORD": "P@ssw0rd1234"
+      }
+    }
+  }
+}
