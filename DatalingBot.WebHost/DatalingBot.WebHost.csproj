@@ -29,9 +29,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\DetalingBot.Database\DetalingBot.Database.csproj" />
     <ProjectReference Include="..\DetalingBot.DTO\DetalingBot.DTO.csproj" />
     <ProjectReference Include="..\DetalingBot.Logger\DetalingBot.Logger.csproj" />
-    <ProjectReference Include="..\DetalingBot\DetalingBot.Database.csproj" />
   </ItemGroup>
 
   <ItemGroup>
