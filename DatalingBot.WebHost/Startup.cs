@@ -1,7 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
-public static class Service
+public static class Startup
 {
     public static async Task InitializeAsync(IServiceProvider services, ICustomLogger logger, bool isDevelopment)
     {

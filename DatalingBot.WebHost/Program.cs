@@ -3,10 +3,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
-using Telegram.Bot;
-using Telegram.Bot.Polling;
-using Telegram.Bot.Types;
-using Telegram.Bot.Types.Enums;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,7 +15,14 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Регистрация DbContext и DbContextFactory
 builder.Services.AddDbContext<AppDbContext>(options =>
+{
+    var dbPath = Path.Combine(AppContext.BaseDirectory, "DetailingBot.db");
+    options.UseSqlite($"Data Source={dbPath}");
+});
+
+builder.Services.AddDbContextFactory<AppDbContext>(options =>
 {
     var dbPath = Path.Combine(AppContext.BaseDirectory, "DetailingBot.db");
     options.UseSqlite($"Data Source={dbPath}");
@@ -29,12 +32,12 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddScoped<ICustomLogger, CustomLogger>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 
-// Регистрация TelegramBotService
-builder.Services.AddScoped<TelegramBotService>();
+// Регистрация TelegramBotService как Singleton
+builder.Services.AddSingleton<TelegramBotService>();
 
 var app = builder.Build();
 
-// Swagger
+// Настройка конвейера HTTP запросов
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -44,19 +47,16 @@ if (app.Environment.IsDevelopment())
 app.UseAuthorization();
 app.MapControllers();
 
-// Запуск TelegramBotService
-using (var scope = app.Services.CreateScope())
-{
-    var botService = scope.ServiceProvider.GetRequiredService<TelegramBotService>();
-    var cancellationToken = app.Lifetime.ApplicationStopping;
-    await botService.StartBotAsync(cancellationToken); 
-}
+// Запуск TelegramBotService (без using scope, так как бот должен работать всё время)
+var botService = app.Services.GetRequiredService<TelegramBotService>();
+var cancellationToken = app.Lifetime.ApplicationStopping;
+await botService.StartBotAsync(cancellationToken);
 
 // Применение миграций через инициализатор
 using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ICustomLogger>();
-    await Service.InitializeAsync(app.Services, logger, app.Environment.IsDevelopment());
+    await Startup.InitializeAsync(app.Services, logger, app.Environment.IsDevelopment());
 }
 
-app.Run();
+await app.RunAsync();
