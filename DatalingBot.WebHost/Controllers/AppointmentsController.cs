@@ -176,7 +176,7 @@ public class AppointmentsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> RescheduleAppointment(int id,[FromBody] DTO_Appointment.RescheduleRequest request)
+    public async Task<IActionResult> RescheduleAppointment(int id, [FromBody] DTO_Appointment.RescheduleRequest request)
     {
         await using var transaction = await _context.Database.BeginTransactionAsync();
 
@@ -184,46 +184,37 @@ public class AppointmentsController : ControllerBase
         {
             var appointment = await _context.Appointments
                 .Include(a => a.Service)
-                .FirstOrDefaultAsync(a => a.Id == id &&
-                                       a.UserId == _currentUserService.UserId);
+                .FirstOrDefaultAsync(a => a.Id == id && a.UserId == _currentUserService.UserId);
 
             if (appointment == null)
-            {
-                _logger.LogWarning("Appointment {AppointmentId} not found for rescheduling", id);
-                return NotFound();
-            }
+                return NotFound($"Appointment {id} not found");
 
             if (appointment.Status != AppointmentStatus.Confirmed)
-            {
-                _logger.LogWarning("Attempt to reschedule non-confirmed appointment {AppointmentId}", id);
                 return BadRequest("Only confirmed appointments can be rescheduled");
-            }
 
-            if (appointment.AppointmentDate < DateTime.Now.AddHours(2))
-            {
-                _logger.LogWarning("Attempt to reschedule appointment {AppointmentId} less than 2h before", id);
+            var minRescheduleTime = DateTime.Now.AddHours(2);
+            if (appointment.AppointmentDate < minRescheduleTime)
                 return BadRequest("Reschedule must be at least 2 hours before appointment");
-            }
 
-            var isAvailable = await _scheduleService.IsTimeSlotAvailable(
-                appointment.ServiceId,
-                request.NewDate,
-                request.NewTime,
-                appointment.Service.DurationMinutes);
+            var newEndTime = request.NewTime.Add(TimeSpan.FromMinutes(appointment.Service.DurationMinutes));
+            var durationMinutes = (int)TimeSpan.FromMinutes(appointment.Service.DurationMinutes).TotalMinutes;
+
+            var isAvailable = await _scheduleService.IsTimeSlotAvailable(appointment.ServiceId,request.NewDate,request.NewTime,durationMinutes); 
 
             if (!isAvailable)
-            {
-                _logger.LogWarning("New time slot not available for appointment {AppointmentId}", id);
-                return Conflict("Time slot not available");
-            }
+                return Conflict("Selected time slot is not available");
 
             appointment.AppointmentDate = request.NewDate;
             appointment.StartTime = request.NewTime;
-            appointment.EndTime = request.NewTime.Add(TimeSpan.FromMinutes(appointment.Service.DurationMinutes));
+            appointment.EndTime = newEndTime;
             appointment.ModifiedDate = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
-            await _notificationService.SendAppointmentRescheduled(appointment.Id);
+            await _notificationService.SendAppointmentRescheduled(
+                appointment.Id,
+                request.NewDate,
+                request.NewTime);
+
             await transaction.CommitAsync();
 
             return NoContent();
@@ -232,7 +223,7 @@ public class AppointmentsController : ControllerBase
         {
             await transaction.RollbackAsync();
             _logger.LogError(ex, "Error rescheduling appointment {AppointmentId}", id);
-            return StatusCode(500, "Internal server error");
+            return StatusCode(StatusCodes.Status500InternalServerError, "Internal server error");
         }
     }
 
@@ -248,14 +239,13 @@ public class AppointmentsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> CancelAppointment(int id,[FromBody] DTO_Appointment.CancelRequest request)
+    public async Task<IActionResult> CancelAppointment(int id, [FromBody] DTO_Appointment.CancelRequest request)
     {
         await using var transaction = await _context.Database.BeginTransactionAsync();
         try
         {
             var appointment = await _context.Appointments
-                .FirstOrDefaultAsync(a => a.Id == id &&
-                                        a.UserId == _currentUserService.UserId);
+                .FirstOrDefaultAsync(a => a.Id == id && a.UserId == _currentUserService.UserId);
 
             if (appointment == null)
             {
@@ -274,7 +264,10 @@ public class AppointmentsController : ControllerBase
             appointment.ModifiedDate = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
-            await _notificationService.SendAppointmentCancellation(appointment.Id);
+
+            // Исправленный вызов с передачей причины
+            await _notificationService.SendAppointmentCancellation(appointment.Id, request.Reason);
+
             await transaction.CommitAsync();
 
             return NoContent();

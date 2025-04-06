@@ -1,63 +1,85 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Telegram.Bot;
+﻿using DetalingBot.Logger;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-[ApiController]
-[Route("api/[controller]")]
-public class ChatController : ControllerBase
+namespace DetalingBot.Controllers
 {
-    private readonly AppDbContext _context;
-    private readonly ITelegramBotClient _botClient;
-    private readonly ICustomLogger _logger;  
-
-    public ChatController(AppDbContext context, ITelegramBotClient botClient, ICustomLogger logger)
+    /// <summary>
+    /// Контроллер для обработки сообщений между клиентами и менеджерами
+    /// </summary>
+    [ApiController]
+    [Route("api/[controller]")]
+    public class ChatController : ControllerBase
     {
-        _context = context;
-        _botClient = botClient;
-        _logger = logger;  
-    }
+        private readonly ITelegramNotificationService _telegramService;
+        private readonly ICustomLogger _logger;
+        private readonly IDbContextFactory<AppDbContext> _dbContextFactory;
 
-    [HttpPost("send-to-manager")]
-    public async Task<IActionResult> SendToManager([FromBody] DTO_ChatMessage dto)
-    {
-        if (dto == null)
+        public ChatController(
+            ITelegramNotificationService telegramService,
+            ICustomLogger logger,
+            IDbContextFactory<AppDbContext> dbContextFactory)
         {
-            _logger.LogError(new ArgumentNullException(nameof(dto)), "DTO is null in SendToManager");
-            return BadRequest("Invalid data.");
+            _telegramService = telegramService;
+            _logger = logger;
+            _dbContextFactory = dbContextFactory;
         }
 
-        using (var transaction = await _context.Database.BeginTransactionAsync())
+        /// <summary>
+        /// Отправляет сообщение менеджеру
+        /// </summary>
+        /// <param name="dto">Данные сообщения</param>
+        /// <returns>Результат операции</returns>
+        /// <response code="200">Сообщение успешно отправлено</response>
+        /// <response code="400">Некорректные данные запроса</response>
+        /// <response code="404">Менеджер не найден</response>
+        /// <response code="500">Ошибка сервера</response>
+        [HttpPost("send-to-manager")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> SendToManager([FromBody] DTO_ChatMessage dto)
         {
+            if (dto == null)
+            {
+                _logger.LogError("Chat message DTO is null");
+                return BadRequest(new { Error = "Invalid request data" });
+            }
+
+            await using var context = await _dbContextFactory.CreateDbContextAsync();
+            await using var transaction = await context.Database.BeginTransactionAsync();
+
             try
             {
-                var managerChatId = await _context.Users
-                    .Where(u => u.IsManager)
-                    .Select(u => u.TelegramChatId)
-                    .FirstOrDefaultAsync();
-
-                if (managerChatId == null)
-                {
-                    _logger.LogWarning("Manager not found in SendToManager");
-                    return BadRequest("Manager not available");
-                }
-
-                _logger.LogInformation($"Sending message to manager: {dto.Message} from User {dto.UserId}");
-
-                await _botClient.SendTextMessageAsync(
-                    chatId: managerChatId,
-                    text: $"Сообщение от клиента {dto.UserId}:\n{dto.Message}");
-
+                await _telegramService.SendMessageToManagerAsync(dto.UserId, dto.Message);
                 await transaction.CommitAsync();
-
-                _logger.LogInformation($"Message successfully sent to manager by User {dto.UserId}");
-
                 return Ok();
+            }
+            catch (ArgumentException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning(ex, "Invalid message data (User: {UserId})", dto.UserId);
+                return BadRequest(new { Error = ex.Message });
+            }
+            catch (ManagerNotFoundException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning(ex, "Manager not found (User: {UserId})", dto.UserId);
+                return NotFound(new { Error = "Manager not available" });
+            }
+            catch (TelegramApiException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Telegram API error (User: {UserId})", dto.UserId);
+                return StatusCode(500, new { Error = "Failed to send message" });
             }
             catch (Exception ex)
             {
                 await transaction.RollbackAsync();
-                _logger.LogError(ex, "Error occurred in SendToManager");
-                return StatusCode(500, "Internal server error: " + ex.Message);
+                _logger.LogError(ex, "Unexpected error (User: {UserId})", dto.UserId);
+                return StatusCode(500, new { Error = "Internal server error" });
             }
         }
     }

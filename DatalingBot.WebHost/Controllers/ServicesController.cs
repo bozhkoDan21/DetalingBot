@@ -1,94 +1,135 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using AutoMapper;
+using DetalingBot.Logger;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-[ApiController]
-[Route("api/[controller]")]
-public class ServicesController : ControllerBase
+namespace DetalingBot.Controllers
 {
-    private readonly AppDbContext _context;
-    private readonly ICustomLogger _logger;  
-
-    public ServicesController(AppDbContext context, ICustomLogger logger)
+    /// <summary>
+    /// Контроллер для управления услугами и их категориями
+    /// </summary>
+    [ApiController]
+    [Route("api/[controller]")]
+    [Produces("application/json")]
+    public class ServicesController : ControllerBase
     {
-        _context = context;
-        _logger = logger;  
-    }
+        private readonly IServiceCatalogService _serviceCatalog;
+        private readonly ICustomLogger _logger;
+        private readonly IMapper _mapper;
+        private readonly IDbContextFactory<AppDbContext> _dbContextFactory;
 
-    // Получить все категории услуг
-    [HttpGet("categories")]
-    public async Task<IActionResult> GetCategories()
-    {
-        try
+        public ServicesController(
+            IServiceCatalogService serviceCatalog,
+            ICustomLogger logger,
+            IMapper mapper,
+            IDbContextFactory<AppDbContext> dbContextFactory)
         {
-            _logger.LogInformation("Fetching all service categories.");
-            var categories = await _context.ServiceCategories.ToListAsync();
-            return Ok(categories);
+            _serviceCatalog = serviceCatalog;
+            _logger = logger;
+            _mapper = mapper;
+            _dbContextFactory = dbContextFactory;
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error fetching service categories.");
-            return StatusCode(500, "Internal server error: " + ex.Message);
-        }
-    }
 
-    // Получить услуги по категории
-    [HttpGet("by-category/{categoryId}")]
-    public async Task<IActionResult> GetByCategory(int categoryId)
-    {
-        try
+        /// <summary>
+        /// Получает все категории услуг
+        /// </summary>
+        /// <response code="200">Список категорий услуг</response>
+        /// <response code="500">Ошибка сервера</response>
+        [HttpGet("categories")]
+        [ProducesResponseType(typeof(IEnumerable<DTO_ServiceCategory>), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        [ResponseCache(Duration = 60)]
+        public async Task<IActionResult> GetCategories()
         {
-            _logger.LogInformation($"Fetching services for category ID: {categoryId}");
-            var services = await _context.Services
-                .Where(s => s.ServiceCategoryId == categoryId)
-                .ToListAsync();
+            await using var context = await _dbContextFactory.CreateDbContextAsync();
+            await using var transaction = await context.Database.BeginTransactionAsync();
 
-            if (!services.Any())
+            try
             {
-                _logger.LogWarning($"No services found for category ID: {categoryId}");
-                return NotFound("No services found for this category.");
+                var categories = await _serviceCatalog.GetCategoriesAsync();
+                await transaction.CommitAsync();
+                return Ok(_mapper.Map<IEnumerable<DTO_ServiceCategory>>(categories));
             }
-
-            return Ok(services);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, $"Error fetching services for category ID: {categoryId}");
-            return StatusCode(500, "Internal server error: " + ex.Message);
-        }
-    }
-
-    // Рассчитать доступность услуги на конкретную дату
-    [HttpGet("calculate/{serviceId}")]
-    public async Task<IActionResult> Calculate(int serviceId, [FromQuery] DateTime date)
-    {
-        try
-        {
-            _logger.LogInformation($"Calculating availability for service ID: {serviceId} on date: {date.ToShortDateString()}");
-
-            var service = await _context.Services.FindAsync(serviceId);
-            if (service == null)
+            catch (Exception ex)
             {
-                _logger.LogWarning($"Service with ID: {serviceId} not found.");
-                return NotFound("Service not found.");
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Error fetching service categories");
+                return StatusCode(500, new { Error = "Internal server error" });
             }
-
-            // Проверка доступности времени
-            var isAvailable = !await _context.Appointments
-                .AnyAsync(a => a.AppointmentDate.Date == date.Date && a.ServiceId == serviceId);
-
-            _logger.LogInformation($"Availability for service ID: {serviceId} on date {date.ToShortDateString()} is {isAvailable}");
-
-            return Ok(new
-            {
-                Price = service.Price,
-                Duration = service.DurationMinutes,
-                IsAvailable = isAvailable
-            });
         }
-        catch (Exception ex)
+
+        /// <summary>
+        /// Получает услуги по категории
+        /// </summary>
+        /// <param name="categoryId">ID категории услуг</param>
+        /// <response code="200">Список услуг в категории</response>
+        /// <response code="404">Категория не найдена</response>
+        /// <response code="500">Ошибка сервера</response>
+        [HttpGet("by-category/{categoryId}")]
+        [ProducesResponseType(typeof(IEnumerable<DTO_Service>), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> GetByCategory(int categoryId)
         {
-            _logger.LogError(ex, "Error calculating availability for service.");
-            return StatusCode(500, "Internal server error: " + ex.Message);
+            await using var context = await _dbContextFactory.CreateDbContextAsync();
+            await using var transaction = await context.Database.BeginTransactionAsync();
+
+            try
+            {
+                var services = await _serviceCatalog.GetServicesByCategoryAsync(categoryId);
+                await transaction.CommitAsync();
+                return Ok(_mapper.Map<IEnumerable<DTO_Service>>(services));
+            }
+            catch (NotFoundException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning(ex, "Category not found: {CategoryId}", categoryId);
+                return NotFound(new { Error = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Error fetching services for category {CategoryId}", categoryId);
+                return StatusCode(500, new { Error = "Internal server error" });
+            }
+        }
+
+        /// <summary>
+        /// Рассчитывает стоимость и доступность услуги
+        /// </summary>
+        /// <param name="serviceId">ID услуги</param>
+        /// <param name="date">Дата для проверки доступности</param>
+        /// <response code="200">Данные о доступности и стоимости</response>
+        /// <response code="404">Услуга не найдена</response>
+        /// <response code="500">Ошибка сервера</response>
+        [HttpGet("calculate/{serviceId}")]
+        [ProducesResponseType(typeof(DTO_ServiceAvailability), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> Calculate(int serviceId, [FromQuery] DateTime date)
+        {
+            await using var context = await _dbContextFactory.CreateDbContextAsync();
+            await using var transaction = await context.Database.BeginTransactionAsync();
+
+            try
+            {
+                var result = await _serviceCatalog.CalculateServiceAvailabilityAsync(serviceId, date);
+                await transaction.CommitAsync();
+                return Ok(_mapper.Map<DTO_ServiceAvailability>(result));
+            }
+            catch (NotFoundException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning(ex, "Service not found: {ServiceId}", serviceId);
+                return NotFound(new { Error = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Error calculating availability for service {ServiceId}", serviceId);
+                return StatusCode(500, new { Error = "Internal server error" });
+            }
         }
     }
 }

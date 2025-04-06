@@ -1,9 +1,9 @@
 ﻿using System.ComponentModel.DataAnnotations.Schema;
 
 [Table("ServiceCategories")]
-public class ServiceCategory : BaseEntity
+public class ServiceCategory
 {
-    public string Description { get; set; }
-
-    public ICollection<Service> Services { get; set; }
+    public int Id { get; set; }
+    public string Name { get; set; }
+    public string? Description { get; set; }
 }

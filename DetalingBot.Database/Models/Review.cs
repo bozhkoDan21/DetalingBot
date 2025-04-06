@@ -9,15 +9,8 @@ public class Review
     public int AppointmentId { get; set; }
     public Appointment Appointment { get; set; }
     public string Comment { get; set; }
-    public string? PhotoBeforePath { get; set; }
-    public string? PhotoAfterPath { get; set; }
     public DateTime ReviewDate { get; set; }
-
-    private int _rating;
-    public int Rating
-    {
-        get => _rating;
-        set => _rating = value is >= 1 and <= 5 ? value
-            : throw new ArgumentException("Rating must be between 1 and 5");
-    }
+    public string? PhotoBeforeTempId { get; set; }
+    public string? PhotoAfterTempId { get; set; }
+    public int Rating { get; set; } // Проверку перенести в сервис
 }

@@ -1,43 +1,51 @@
-﻿using Microsoft.AspNetCore.Builder;
+﻿using DatalingBot.WebHost.Services;
+using DetalingBot.Infrastructure.Services;
+using DetalingBot.Mapping;
+using DetalingBot.Services;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
+using Telegram.Bot;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Настройка Serilog
+// 1. Настройка логгера
 builder.Host.UseSerilog((ctx, lc) =>
     lc.ReadFrom.Configuration(ctx.Configuration));
 
-// DI и настройки
+// 2. Базовые сервисы
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddAutoMapper(typeof(MappingProfile));
 
-// Регистрация DbContext и DbContextFactory
+// 3. Регистрация базы данных
+var dbPath = Path.Combine(AppContext.BaseDirectory, "DetailingBot.db");
 builder.Services.AddDbContext<AppDbContext>(options =>
-{
-    var dbPath = Path.Combine(AppContext.BaseDirectory, "DetailingBot.db");
-    options.UseSqlite($"Data Source={dbPath}");
-});
+    options.UseSqlite($"Data Source={dbPath}"));
 
 builder.Services.AddDbContextFactory<AppDbContext>(options =>
-{
-    var dbPath = Path.Combine(AppContext.BaseDirectory, "DetailingBot.db");
-    options.UseSqlite($"Data Source={dbPath}");
-});
+    options.UseSqlite($"Data Source={dbPath}"));
 
-// Регистрация кастомных сервисов
+// 4. Регистрация кастомных сервисов
 builder.Services.AddScoped<ICustomLogger, CustomLogger>();
+builder.Services.AddScoped<ICurrentUserService, CurrentUserService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
+builder.Services.AddScoped<ITelegramNotificationService, TelegramNotificationService>();
+builder.Services.AddScoped<IReviewService, ReviewService>();
+builder.Services.AddScoped<IServiceCatalogService, ServiceCatalogService>();
+builder.Services.AddScoped<IScheduleService, ScheduleService>();
+builder.Services.AddScoped<ITelegramMediaService, TelegramMediaService>();
 
-// Регистрация TelegramBotService как Singleton
+// 5. Регистрация Telegram сервисов
+builder.Services.AddSingleton<ITelegramBotClient>(sp =>new TelegramBotClient(builder.Configuration["Telegram:Token"]));
 builder.Services.AddSingleton<TelegramBotService>();
 
 var app = builder.Build();
 
-// Настройка конвейера HTTP запросов
+// 6. Конфигурация middleware
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -47,12 +55,12 @@ if (app.Environment.IsDevelopment())
 app.UseAuthorization();
 app.MapControllers();
 
-// Запуск TelegramBotService (без using scope, так как бот должен работать всё время)
+// 7. Запуск фоновых сервисов
 var botService = app.Services.GetRequiredService<TelegramBotService>();
 var cancellationToken = app.Lifetime.ApplicationStopping;
 await botService.StartBotAsync(cancellationToken);
 
-// Применение миграций через инициализатор
+// 8. Инициализация базы данных
 using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ICustomLogger>();

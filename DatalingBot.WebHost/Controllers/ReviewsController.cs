@@ -1,69 +1,87 @@
-﻿using DetalingBot.DTO.Model;
+﻿using AutoMapper;
+using DetalingBot.Logger;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using System;
+using Microsoft.EntityFrameworkCore;
 
-[ApiController]
-[Route("api/[controller]")]
-public class ReviewsController : ControllerBase
+namespace DetalingBot.Controllers
 {
-    private readonly AppDbContext _context;
-    private readonly IFileStorageService _fileStorage;
-    private readonly ICustomLogger _logger;  
-
-    public ReviewsController(AppDbContext context, IFileStorageService fileStorage, ICustomLogger logger)
+    /// <summary>
+    /// Контроллер для управления отзывами клиентов, включая фото "до/после"
+    /// </summary>
+    [ApiController]
+    [Route("api/[controller]")]
+    [Produces("application/json")]
+    public class ReviewsController : ControllerBase
     {
-        _context = context;
-        _fileStorage = fileStorage;
-        _logger = logger;  
-    }
+        private readonly IReviewService _reviewService;
+        private readonly ICustomLogger _logger;
+        private readonly IMapper _mapper;
+        private readonly IDbContextFactory<AppDbContext> _dbContextFactory;
 
-    [HttpPost]
-    public async Task<IActionResult> Create([FromForm] DTO_CreateReview dto)
-    {
-        if (dto == null)
+        public ReviewsController(
+            IReviewService reviewService,
+            ICustomLogger logger,
+            IMapper mapper,
+            IDbContextFactory<AppDbContext> dbContextFactory)
         {
-            _logger.LogError(new ArgumentNullException(nameof(dto)), "DTO is null in Create Review");
-            return BadRequest("Invalid data.");
+            _reviewService = reviewService;
+            _logger = logger;
+            _mapper = mapper;
+            _dbContextFactory = dbContextFactory;
         }
 
-        using (var transaction = await _context.Database.BeginTransactionAsync())
+        /// <summary>
+        /// Создает новый отзыв с фото "до/после"
+        /// </summary>
+        /// <param name="dto">Данные отзыва и фотографии</param>
+        /// <returns>Созданный отзыв</returns>
+        /// <response code="200">Отзыв успешно создан</response>
+        /// <response code="400">Некорректные данные или ошибка валидации файлов</response>
+        /// <response code="404">Связанная запись не найдена</response>
+        /// <response code="500">Внутренняя ошибка сервера</response>
+        [HttpPost]
+        [ProducesResponseType(typeof(DTO_Review), StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> Create([FromForm] DTO_CreateReview dto)
         {
+            if (!ModelState.IsValid)
+            {
+                _logger.LogWarning("Invalid model state for review creation");
+                return BadRequest(ModelState);
+            }
+
+            await using var context = await _dbContextFactory.CreateDbContextAsync();
+            await using var transaction = await context.Database.BeginTransactionAsync();
+
             try
             {
-                var review = new Review
-                {
-                    UserId = dto.UserId,
-                    AppointmentId = dto.AppointmentId,
-                    Rating = dto.Rating,
-                    Comment = dto.Comment,
-                    ReviewDate = DateTime.UtcNow
-                };
+                var result = await _reviewService.CreateReviewAsync(dto);
+                var response = _mapper.Map<DTO_Review>(result);
 
-                // Обработка фото
-                if (dto.BeforePhoto != null)
-                {
-                    review.PhotoBeforePath = await _fileStorage.SaveFileAsync(dto.BeforePhoto);
-                    _logger.LogInformation("Before photo saved: " + review.PhotoBeforePath);
-                }
-
-                if (dto.AfterPhoto != null)
-                {
-                    review.PhotoAfterPath = await _fileStorage.SaveFileAsync(dto.AfterPhoto);
-                    _logger.LogInformation("After photo saved: " + review.PhotoAfterPath);
-                }
-
-                _context.Reviews.Add(review);
-                await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
-
-                _logger.LogInformation($"Review created for AppointmentId: {dto.AppointmentId}, UserId: {dto.UserId}");
-                return Ok(review);
+                _logger.LogInformation("Review created for appointment {AppointmentId}", dto.AppointmentId);
+                return Ok(response);
+            }
+            catch (FileValidationException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning(ex, "File validation failed");
+                return BadRequest(new { Error = ex.Message });
+            }
+            catch (NotFoundException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning(ex, "Related entity not found");
+                return NotFound(new { Error = ex.Message });
             }
             catch (Exception ex)
             {
                 await transaction.RollbackAsync();
-                _logger.LogError(ex, "Error occurred while creating review");
-                return StatusCode(500, "Internal server error: " + ex.Message);
+                _logger.LogError(ex, "Error creating review");
+                return StatusCode(500, new { Error = "Internal server error" });
             }
         }
     }
