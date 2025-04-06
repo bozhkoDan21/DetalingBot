@@ -1,5 +1,4 @@
-﻿using DatalingBot.WebHost.Services;
-using DetalingBot.Infrastructure.Services;
+﻿using DetalingBot.Infrastructure.Services;
 using DetalingBot.Mapping;
 using DetalingBot.Services;
 using Microsoft.AspNetCore.Builder;
@@ -21,6 +20,11 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddAutoMapper(typeof(MappingProfile));
 
+builder.Services.AddHttpClient("TelegramClient", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
 // 3. Регистрация базы данных
 var dbPath = Path.Combine(AppContext.BaseDirectory, "DetailingBot.db");
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -40,8 +44,10 @@ builder.Services.AddScoped<IScheduleService, ScheduleService>();
 builder.Services.AddScoped<ITelegramMediaService, TelegramMediaService>();
 
 // 5. Регистрация Telegram сервисов
-builder.Services.AddSingleton<ITelegramBotClient>(sp =>new TelegramBotClient(builder.Configuration["Telegram:Token"]));
+builder.Services.AddSingleton<ITelegramBotClient>(sp => new TelegramBotClient(builder.Configuration["Telegram:Token"] ??
+    throw new InvalidOperationException("Telegram token not configured")));
 builder.Services.AddSingleton<TelegramBotService>();
+builder.Services.AddHostedService<BotBackgroundService>();
 
 var app = builder.Build();
 
@@ -66,5 +72,6 @@ using (var scope = app.Services.CreateScope())
     var logger = scope.ServiceProvider.GetRequiredService<ICustomLogger>();
     await Startup.InitializeAsync(app.Services, logger, app.Environment.IsDevelopment());
 }
+
 
 await app.RunAsync();
