@@ -2,10 +2,12 @@
 using DetalingBot.Mapping;
 using DetalingBot.Services;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
+using System.Net.Http.Headers;
 using Telegram.Bot;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -20,10 +22,13 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddAutoMapper(typeof(MappingProfile));
 
-builder.Services.AddHttpClient("TelegramClient", client =>
+builder.Services.AddHttpClient("ApiClient", client =>
 {
+    client.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? throw new InvalidOperationException("ApiBaseUrl not configured"));
     client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 });
+builder.WebHost.UseUrls("https://localhost:5001", "http://localhost:5000");
 
 // 3. Регистрация базы данных
 var dbPath = Path.Combine(AppContext.BaseDirectory, "DetailingBot.db");

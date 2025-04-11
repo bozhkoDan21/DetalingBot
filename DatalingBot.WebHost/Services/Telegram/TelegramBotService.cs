@@ -6,6 +6,7 @@ using Telegram.Bot.Types.Enums;
 using Microsoft.EntityFrameworkCore;
 using System.Net.Http.Json;
 using Telegram.Bot.Types.ReplyMarkups;
+using DetalingBot.Logger;
 
 /// <summary>
 /// Основной сервис для работы с Telegram ботом
@@ -14,10 +15,13 @@ public class TelegramBotService
 {
     private readonly ITelegramBotClient _botClient;
     private readonly IDbContextFactory<AppDbContext> _dbContextFactory;
+    private readonly Dictionary<long, DTO_CreateReview> _reviewInProgress = new();
     private readonly ICustomLogger _logger;
+    private readonly IServiceCatalogService _serviceCatalog;
     private readonly ITelegramNotificationService _notificationService;
     private readonly ITelegramMediaService _mediaService;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IReviewService _reviewService;
 
     /// <summary>
     /// Конструктор сервиса Telegram бота
@@ -26,16 +30,20 @@ public class TelegramBotService
         IConfiguration config,
         IDbContextFactory<AppDbContext> dbContextFactory,
         ICustomLogger logger,
+        IServiceCatalogService serviceCatalog,
         ITelegramNotificationService notificationService,
         ITelegramMediaService mediaService,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        IReviewService reviewService)
     {
         _dbContextFactory = dbContextFactory;
         _logger = logger;
+        _serviceCatalog = serviceCatalog;
         _notificationService = notificationService;
         _mediaService = mediaService;
         _httpClientFactory = httpClientFactory;
         _botClient = new TelegramBotClient(config["Telegram:Token"]);
+        _reviewService = reviewService;
     }
 
     private bool _isRunning = false;
@@ -92,12 +100,7 @@ public class TelegramBotService
         {
             await _botClient.SetMyCommandsAsync(new[]
             {
-                new BotCommand { Command = "start", Description = "Главное меню" },
-                new BotCommand { Command = "services", Description = "Услуги и цены" },
-                new BotCommand { Command = "book", Description = "Новая запись" },
-                new BotCommand { Command = "mybookings", Description = "Мои записи" },
-                new BotCommand { Command = "reviews", Description = "Мои отзывы" },
-                new BotCommand { Command = "support", Description = "Помощь" }
+                new BotCommand { Command = "start", Description = "Главное меню" }
             });
         }
         catch (Exception ex)
@@ -151,11 +154,34 @@ public class TelegramBotService
         }
         else if (message.Photo != null)
         {
-            await HandlePhotoMessage(message, user, ct);
+            // Проверяем, относится ли фото к отзыву
+            var hasDraftReview = await context.Reviews
+                .AnyAsync(r => r.UserId == user.Id && r.Comment == null, ct);
+
+            if (hasDraftReview)
+            {
+                // Здесь можно добавить логику определения, это фото "до" или "после"
+                await HandleReviewPhotoMessage(message, user, true, ct);
+            }
+            else
+            {
+                await HandlePhotoMessage(message, user, ct);
+            }
         }
         else
         {
-            await HandleRegularTextMessage(message, user, ct);
+            // Проверяем, есть ли черновик отзыва
+            var hasDraftReview = await context.Reviews
+                .AnyAsync(r => r.UserId == user.Id && r.Comment == null, ct);
+
+            if (hasDraftReview)
+            {
+                await ProcessReviewComment(message, user, ct);
+            }
+            else
+            {
+                await HandleRegularTextMessage(message, user, ct);
+            }
         }
     }
 
@@ -164,38 +190,19 @@ public class TelegramBotService
     /// </summary>
     private async Task ProcessBotCommand(Message message, User user, CancellationToken ct)
     {
-        var command = message.Text.Split(' ')[0];
+        var command = message.Text.Split(' ')[0].ToLower();
 
         switch (command)
         {
             case "/start":
                 await ShowMainMenu(message.Chat.Id, "Добро пожаловать! Выберите действие:", ct);
                 break;
-
-            case "/services":
-                await ShowServicesMenu(message.Chat.Id, ct);
-                break;
-
-            case "/book":
-                await StartBookingProcess(message.Chat.Id, user.Id, ct);
-                break;
-
-            case "/mybookings":
-                await ShowUserAppointments(message.Chat.Id, user.Id, ct);
-                break;
-
-            case "/reviews":
-                await ShowUserReviews(message.Chat.Id, user.Id, ct);
-                break;
-
-            case "/support":
-                await HandleSupportRequest(message.Chat.Id, user.Id, ct);
-                break;
-
             case "/cancel":
                 await HandleCancelCommand(message, user.Id, ct);
                 break;
-
+            case "/done":
+                await CompleteReviewProcess(message.Chat.Id, user.Id, ct);
+                break;
             default:
                 await SendUnknownCommandMessage(message.Chat.Id, ct);
                 break;
@@ -207,10 +214,49 @@ public class TelegramBotService
     /// </summary>
     private async Task HandleRegularTextMessage(Message message, User user, CancellationToken ct)
     {
-        await _botClient.SendTextMessageAsync(
-            chatId: message.Chat.Id,
-            text: "Я вас не понял. Используйте команды из меню.",
-            cancellationToken: ct);
+        // Проверяем, находится ли пользователь в процессе оставления отзыва
+        if (_reviewInProgress.TryGetValue(message.Chat.Id, out var reviewDto))
+        {
+            try
+            {
+                var dto = new DTO_CreateReview
+                {
+                    UserId = user.Id,
+                    AppointmentId = reviewDto.AppointmentId,
+                    Rating = reviewDto.Rating,
+                    Comment = message.Text
+                };
+
+                await _reviewService.CreateReviewAsync(dto);
+
+                _reviewInProgress.Remove(message.Chat.Id);
+
+                await _botClient.SendTextMessageAsync(
+                    chatId: message.Chat.Id,
+                    text: "Спасибо за ваш отзыв!",
+                    cancellationToken: ct);
+            }
+            catch (NotFoundException ex)
+            {
+                _logger.LogWarning(ex, "Appointment not found during review creation");
+                await _botClient.SendTextMessageAsync(
+                    chatId: message.Chat.Id,
+                    text: "Запись не найдена. Отзыв не может быть сохранен.",
+                    cancellationToken: ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating review");
+                await SendErrorMessage(message.Chat.Id, ct);
+            }
+        }
+        else
+        {
+            await _botClient.SendTextMessageAsync(
+                chatId: message.Chat.Id,
+                text: "Я вас не понял. Используйте команды из меню.",
+                cancellationToken: ct);
+        }
     }
 
     /// <summary>
@@ -249,24 +295,41 @@ public class TelegramBotService
 
         try
         {
-            if (data.StartsWith("category_"))
+            if (data.StartsWith("info_category_"))
             {
-                var categoryId = int.Parse(data.Split('_')[1]);
-                await ShowServicesInCategory(callbackQuery.Message.Chat.Id, categoryId, ct);
+                var categoryId = int.Parse(data.Split('_')[2]);
+                await ShowCategoryInfo(callbackQuery.Message.Chat.Id, categoryId, ct);
+            }
+            else if (data.StartsWith("book_category_"))
+            {
+                var categoryId = int.Parse(data.Split('_')[2]);
+                await ShowServicesForBooking(callbackQuery.Message.Chat.Id, categoryId, ct);
             }
             else if (data.StartsWith("book_"))
             {
                 var serviceId = int.Parse(data.Split('_')[1]);
                 await ProcessServiceSelection(callbackQuery.Message.Chat.Id, serviceId, ct);
             }
+            else if (data == "show_services")
+            {
+                await ShowServicesInfoMenu(callbackQuery.Message.Chat.Id, ct);
+            }
+            else if (data == "new_booking")
+            {
+                await ShowBookingMenu(callbackQuery.Message.Chat.Id, ct);
+            }
+            else if (data == "back_to_main")
+            {
+                await ShowMainMenu(callbackQuery.Message.Chat.Id, "Главное меню:", ct);
+            }
+            else if (data == "back_to_categories")
+            {
+                await ShowServicesInfoMenu(callbackQuery.Message.Chat.Id, ct);
+            }
             else if (data.StartsWith("cancel_"))
             {
                 var appointmentId = int.Parse(data.Split('_')[1]);
                 await HandleAppointmentCancellation(callbackQuery.Message.Chat.Id, appointmentId, ct);
-            }
-            else if (data == "show_services")
-            {
-                await ShowServicesMenu(callbackQuery.Message.Chat.Id, ct);
             }
             else if (data == "my_bookings")
             {
@@ -283,6 +346,18 @@ public class TelegramBotService
                 var user = await GetUserByChatId(callbackQuery.Message.Chat.Id, ct);
                 await HandleSupportRequest(callbackQuery.Message.Chat.Id, user.Id, ct);
             }
+            else if (data.StartsWith("select_review_"))
+            {
+                var appointmentId = int.Parse(data.Split('_')[2]);
+                await ProcessReviewSelection(callbackQuery.Message.Chat.Id, appointmentId, ct);
+            }
+            else if (data.StartsWith("rate_"))
+            {
+                var parts = data.Split('_');
+                var appointmentId = int.Parse(parts[1]);
+                var rating = int.Parse(parts[2]);
+                await ProcessRatingSelection(callbackQuery.Message.Chat.Id, appointmentId, rating, ct);
+            }
 
             await _botClient.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: ct);
         }
@@ -293,6 +368,162 @@ public class TelegramBotService
                 callbackQuery.Id,
                 text: "Произошла ошибка",
                 cancellationToken: ct);
+        }
+    }
+
+    /// <summary>
+    /// Отображает меню с категориями услуг (для просмотра информации)
+    /// </summary>
+    private async Task ShowServicesInfoMenu(long chatId, CancellationToken ct)
+    {
+        try
+        {
+            var categories = await _serviceCatalog.GetCategoriesAsync();
+
+            var buttons = categories.Select(c =>
+                new[] { InlineKeyboardButton.WithCallbackData(c.Name, $"info_category_{c.Id}") }).ToList();
+
+            buttons.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData("⬅️ Назад", "back_to_main")
+            });
+
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Выберите категорию услуг, чтобы подробно узнать о ней:",
+                replyMarkup: new InlineKeyboardMarkup(buttons),
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error showing services info menu");
+            await SendErrorMessage(chatId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Отображает информацию о выбранной категории услуг
+    /// </summary>
+    private async Task ShowCategoryInfo(long chatId, int categoryId, CancellationToken ct)
+    {
+        try
+        {
+            var category = await _serviceCatalog.GetCategoryByIdAsync(categoryId);
+            var services = await _serviceCatalog.GetTopServicesByCategoryAsync(categoryId);
+
+            var message = $"<b>{category.Name}</b>\n\n" +
+                         $"{category.Description}\n\n" +
+                         "<i>Примеры услуг в этой категории:</i>\n" +
+                         string.Join("\n", services.Select(s => $"• {s.Name}"));
+
+            var backButton = new InlineKeyboardMarkup(new[]
+            {
+                new[] { InlineKeyboardButton.WithCallbackData("⬅️ Назад к категориям", "show_services") }
+            });
+
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: message,
+                parseMode: ParseMode.Html,
+                replyMarkup: backButton,
+                cancellationToken: ct);
+        }
+        catch (NotFoundException ex)
+        {
+            _logger.LogWarning(ex, $"Category {categoryId} not found");
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Категория не найдена.",
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error showing info for category {categoryId}");
+            await SendErrorMessage(chatId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Отображает меню с категориями услуг (для записи)
+    /// </summary>
+    private async Task ShowBookingMenu(long chatId, CancellationToken ct)
+    {
+        try
+        {
+            var httpClient = _httpClientFactory.CreateClient("ApiClient");
+            var categories = await httpClient.GetFromJsonAsync<List<ServiceCategory>>("api/services/categories");
+
+            var buttons = categories.Select(c =>
+                new[] { InlineKeyboardButton.WithCallbackData(c.Name, $"book_category_{c.Id}") }).ToList();
+
+            buttons.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData("⬅️ Назад", "back_to_main")
+            });
+
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Выберите категорию услуг для записи:",
+                replyMarkup: new InlineKeyboardMarkup(buttons),
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error showing booking menu");
+            await SendErrorMessage(chatId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Отображает услуги в выбранной категории (для записи)
+    /// </summary>
+    private async Task ShowServicesForBooking(long chatId, int categoryId, CancellationToken ct)
+    {
+        try
+        {
+            var services = await _serviceCatalog.GetServicesByCategoryAsync(categoryId);
+
+            if (!services.Any())
+            {
+                await _botClient.SendTextMessageAsync(
+                    chatId: chatId,
+                    text: "В этой категории пока нет услуг.",
+                    cancellationToken: ct);
+                return;
+            }
+
+            var message = "Доступные услуги в этой категории:\n\n" +
+                string.Join("\n\n", services.Select(s =>
+                    $"{s.Name}\n" +
+                    $"Цена: {s.Price}₽\n" +
+                    $"Продолжительность: {s.DurationMinutes} мин."));
+
+            var buttons = services.Select(s =>
+                new[] { InlineKeyboardButton.WithCallbackData($"Записаться на {s.Name}", $"book_{s.Id}") }).ToList();
+
+            buttons.Add(new[]
+            {
+                InlineKeyboardButton.WithCallbackData("⬅️ Назад к категориям", "new_booking")
+            });
+
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: message,
+                replyMarkup: new InlineKeyboardMarkup(buttons),
+                cancellationToken: ct);
+        }
+        catch (NotFoundException ex)
+        {
+            _logger.LogWarning(ex, $"Category {categoryId} not found");
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Категория не найдена.",
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error showing services for booking in category {categoryId}");
+            await SendErrorMessage(chatId, ct);
         }
     }
 
@@ -310,7 +541,11 @@ public class TelegramBotService
             },
             new[]
             {
-                InlineKeyboardButton.WithCallbackData("⭐ Оставить отзыв", "create_review"),
+                InlineKeyboardButton.WithCallbackData("➕ Записаться", "new_booking"),
+                InlineKeyboardButton.WithCallbackData("⭐ Оставить отзыв", "create_review")
+            },
+            new[]
+            {
                 InlineKeyboardButton.WithCallbackData("💬 Помощь", "support")
             }
         });
@@ -329,7 +564,7 @@ public class TelegramBotService
     {
         try
         {
-            var httpClient = _httpClientFactory.CreateClient();
+            var httpClient = _httpClientFactory.CreateClient("ApiClient");
             var categories = await httpClient.GetFromJsonAsync<List<ServiceCategory>>("api/services/categories");
 
             var buttons = categories.Select(c =>
@@ -472,43 +707,6 @@ public class TelegramBotService
     }
 
     /// <summary>
-    /// Отображает отзывы пользователя
-    /// </summary>
-    private async Task ShowUserReviews(long chatId, int userId, CancellationToken ct)
-    {
-        try
-        {
-            var httpClient = _httpClientFactory.CreateClient();
-            var reviews = await httpClient.GetFromJsonAsync<List<Review>>($"api/reviews?userId={userId}");
-
-            if (reviews == null || !reviews.Any())
-            {
-                await _botClient.SendTextMessageAsync(
-                    chatId: chatId,
-                    text: "У вас пока нет отзывов.",
-                    cancellationToken: ct);
-                return;
-            }
-
-            var message = "Ваши отзывы:\n\n" +
-                string.Join("\n\n", reviews.Select(r =>
-                    $"Оценка: {new string('⭐', r.Rating)}\n" +
-                    $"Комментарий: {r.Comment}\n" +
-                    $"Дата: {r.ReviewDate:dd.MM.yyyy}"));
-
-            await _botClient.SendTextMessageAsync(
-                chatId: chatId,
-                text: message,
-                cancellationToken: ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error getting user reviews");
-            await SendErrorMessage(chatId, ct);
-        }
-    }
-
-    /// <summary>
     /// Обрабатывает запрос на поддержку
     /// </summary>
     private async Task HandleSupportRequest(long chatId, int userId, CancellationToken ct)
@@ -609,15 +807,235 @@ public class TelegramBotService
     /// </summary>
     private async Task StartReviewProcess(long chatId, int userId, CancellationToken ct)
     {
-        await _botClient.SendTextMessageAsync(
-            chatId: chatId,
-            text: "Пожалуйста, оцените нашу услугу от 1 до 5 звезд:",
-            replyMarkup: new InlineKeyboardMarkup(new[]
+        try
+        {
+            var appointments = await _reviewService.GetCompletedAppointmentsForReviewAsync(userId);
+
+            if (!appointments.Any())
             {
-                Enumerable.Range(1, 5).Select(i =>
-                    InlineKeyboardButton.WithCallbackData(new string('⭐', i), $"rate_{i}"))
-            }),
-            cancellationToken: ct);
+                await _botClient.SendTextMessageAsync(
+                    chatId: chatId,
+                    text: "У вас нет завершенных записей, по которым можно оставить отзыв.",
+                    cancellationToken: ct);
+                return;
+            }
+
+            var buttons = appointments.Select(a =>
+                new[]
+                {
+                InlineKeyboardButton.WithCallbackData(
+                    $"{a.Service.Name} ({a.AppointmentDate:dd.MM.yyyy})",
+                    $"select_review_{a.Id}")
+                }).ToList();
+
+            buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("⬅️ Назад", "back_to_main") });
+
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Выберите запись, по которой хотите оставить отзыв:",
+                replyMarkup: new InlineKeyboardMarkup(buttons),
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error starting review process");
+            await SendErrorMessage(chatId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Обрабатывает выбор записи для отзыва
+    /// </summary>
+    private async Task ProcessReviewSelection(long chatId, int appointmentId, CancellationToken ct)
+    {
+        try
+        {
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Пожалуйста, оцените услугу от 1 до 5 звезд:",
+                replyMarkup: new InlineKeyboardMarkup(
+                    Enumerable.Range(1, 5).Select(i =>
+                        new[]
+                        {
+                        InlineKeyboardButton.WithCallbackData(new string('⭐', i), $"rate_{appointmentId}_{i}")
+                        }).ToList()),
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error processing review selection for appointment {appointmentId}");
+            await SendErrorMessage(chatId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Обрабатывает оценку услуги
+    /// </summary>
+    private async Task ProcessRatingSelection(long chatId, int appointmentId, int rating, CancellationToken ct)
+    {
+        try
+        {
+            var user = await GetUserByChatId(chatId, ct);
+
+            // Создаем DTO для отзыва
+            var reviewDto = new DTO_CreateReview
+            {
+                UserId = user.Id,
+                AppointmentId = appointmentId,
+                Rating = rating,
+                Comment = null // Пока нет комментария
+            };
+
+            // Сохраняем в базе как черновик
+            var review = await _reviewService.CreateReviewAsync(reviewDto);
+
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Спасибо за оценку! Теперь вы можете:\n" +
+                      "1. Отправить фото 'до' (если есть)\n" +
+                      "2. Отправить фото 'после' (если есть)\n" +
+                      "3. Написать текстовый комментарий\n" +
+                      "4. Нажать /done чтобы завершить",
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Error processing rating {rating} for appointment {appointmentId}");
+            await SendErrorMessage(chatId, ct);
+        }
+    }
+
+    /// <summary>
+    /// Обрабатывает входящие фотографии для отзыва
+    /// </summary>
+    private async Task HandleReviewPhotoMessage(Message message, User user, bool isBeforePhoto, CancellationToken ct)
+    {
+        try
+        {
+            var fileId = message.Photo.Last().FileId;
+            var tempId = await _mediaService.StoreTempPhotoAsync(fileId);
+
+            await using var context = await _dbContextFactory.CreateDbContextAsync(ct);
+
+            var lastReview = await context.Reviews
+                .Where(r => r.UserId == user.Id && r.Comment == null)
+                .OrderByDescending(r => r.ReviewDate)
+                .FirstOrDefaultAsync(ct);
+
+            if (lastReview == null)
+            {
+                await _botClient.SendTextMessageAsync(
+                    chatId: message.Chat.Id,
+                    text: "Пожалуйста, начните процесс отзыва сначала.",
+                    cancellationToken: ct);
+                return;
+            }
+
+            if (isBeforePhoto)
+            {
+                lastReview.PhotoBeforeTempId = tempId;
+                await _botClient.SendTextMessageAsync(
+                    chatId: message.Chat.Id,
+                    text: "Фото 'до' сохранено! Теперь можете отправить фото 'после' или текстовый комментарий.",
+                    cancellationToken: ct);
+            }
+            else
+            {
+                lastReview.PhotoAfterTempId = tempId;
+                await _botClient.SendTextMessageAsync(
+                    chatId: message.Chat.Id,
+                    text: "Фото 'после' сохранено! Теперь можете отправить текстовый комментарий.",
+                    cancellationToken: ct);
+            }
+
+            await context.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing review photo");
+            await SendErrorMessage(message.Chat.Id, ct);
+        }
+    }
+
+    /// <summary>
+    /// Обрабатывает текстовый комментарий для отзыва
+    /// </summary>
+    private async Task ProcessReviewComment(Message message, User user, CancellationToken ct)
+    {
+        await using var context = await _dbContextFactory.CreateDbContextAsync(ct);
+        try
+        {
+            // Находим последний черновик отзыва пользователя
+            var lastReview = await context.Reviews
+                .Where(r => r.UserId == user.Id && r.Comment == null)
+                .OrderByDescending(r => r.ReviewDate)
+                .FirstOrDefaultAsync(ct);
+
+            if (lastReview == null)
+            {
+                await _botClient.SendTextMessageAsync(
+                    chatId: message.Chat.Id,
+                    text: "Пожалуйста, начните процесс отзыва сначала.",
+                    cancellationToken: ct);
+                return;
+            }
+
+            // Обновляем комментарий
+            lastReview.Comment = message.Text;
+            await context.SaveChangesAsync(ct);
+
+            await _botClient.SendTextMessageAsync(
+                chatId: message.Chat.Id,
+                text: "Спасибо за ваш отзыв!",
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing review comment");
+            await SendErrorMessage(message.Chat.Id, ct);
+        }
+    }
+
+    /// <summary>
+    /// Завершает процесс создания отзыва
+    /// </summary>
+    private async Task CompleteReviewProcess(long chatId, int userId, CancellationToken ct)
+    {
+        await using var context = await _dbContextFactory.CreateDbContextAsync(ct);
+        try
+        {
+            // Находим последний черновик отзыва пользователя
+            var lastReview = await context.Reviews
+                .Where(r => r.UserId == userId && r.Comment == null)
+                .OrderByDescending(r => r.ReviewDate)
+                .FirstOrDefaultAsync(ct);
+
+            if (lastReview == null)
+            {
+                await _botClient.SendTextMessageAsync(
+                    chatId: chatId,
+                    text: "Нет активного процесса создания отзыва.",
+                    cancellationToken: ct);
+                return;
+            }
+
+            // Если нет комментария, устанавливаем дефолтный
+            if (string.IsNullOrEmpty(lastReview.Comment))
+            {
+                lastReview.Comment = "Без комментария";
+                await context.SaveChangesAsync(ct);
+            }
+
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Спасибо за ваш отзыв!",
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error completing review");
+            await SendErrorMessage(chatId, ct);
+        }
     }
 
     /// <summary>

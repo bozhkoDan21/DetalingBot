@@ -56,5 +56,16 @@ namespace DetalingBot.Services
                 .AsNoTracking()
                 .ToListAsync();
         }
+
+        public async Task<IEnumerable<Appointment>> GetCompletedAppointmentsForReviewAsync(int userId)
+        {
+            return await _context.Appointments
+                .Include(a => a.Service)
+                .Where(a => a.UserId == userId &&
+                           a.Status == AppointmentStatus.Completed &&
+                           !_context.Reviews.Any(r => r.AppointmentId == a.Id))
+                .AsNoTracking()
+                .ToListAsync();
+        }
     }
 }

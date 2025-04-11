@@ -14,4 +14,11 @@ public interface IReviewService
     /// Получает отзывы по идентификатору записи
     /// </summary>
     Task<IEnumerable<Review>> GetReviewsByAppointmentAsync(int appointmentId);
+
+    /// <summary>
+    /// Проверяет, может ли пользователь оставить отзыв
+    /// </summary>
+    /// <param name="userId">ID пользователя</param>
+    /// <returns>Список завершенных записей, по которым можно оставить отзыв</returns>
+    Task<IEnumerable<Appointment>> GetCompletedAppointmentsForReviewAsync(int userId);
 }
