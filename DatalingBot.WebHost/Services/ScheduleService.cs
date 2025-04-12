@@ -14,6 +14,14 @@ public class ScheduleService : IScheduleService
         _logger = logger;
     }
 
+    /// <summary>
+    /// Проверяет, доступен ли указанный временной интервал для записи на услугу
+    /// </summary>
+    /// <param name="serviceId">ID услуги</param>
+    /// <param name="date">Дата записи</param>
+    /// <param name="startTime">Время начала записи</param>
+    /// <param name="durationMinutes">Продолжительность услуги в минутах</param>
+    /// <returns>True, если временной интервал доступен для записи, иначе False</returns>
     public async Task<bool> IsTimeSlotAvailable(int serviceId, DateTime date, TimeSpan startTime, int durationMinutes)
     {
         try
@@ -38,6 +46,12 @@ public class ScheduleService : IScheduleService
         }
     }
 
+    /// <summary>
+    /// Получает список доступных временных интервалов для записи на указанную услугу в указанную дату
+    /// </summary>
+    /// <param name="serviceId">ID услуги</param>
+    /// <param name="date">Дата записи</param>
+    /// <returns>Коллекция доступных временных интервалов</returns>
     public async Task<IEnumerable<TimeSpan>> GetAvailableTimeSlots(int serviceId, DateTime date)
     {
         var service = await _context.Services.FindAsync(serviceId);

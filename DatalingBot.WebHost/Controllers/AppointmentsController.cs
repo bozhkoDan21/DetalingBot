@@ -137,17 +137,56 @@ public class AppointmentsController : ControllerBase
     /// <returns>Список записей со статусом Confirmed на текущую дату и позднее</returns>
     [HttpGet("upcoming")]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<ActionResult<IEnumerable<DTO_Appointment.Response>>> GetUpcomingAppointments()
+    public async Task<ActionResult<IEnumerable<DTO_Appointment.Response>>> GetUpcomingAppointments(
+    [FromQuery] int userId)
     {
         try
         {
             var now = DateTime.Now;
             var appointments = await _context.Appointments
-                .Where(a => a.UserId == _currentUserService.UserId &&
+                .Where(a => a.UserId == userId &&
                            a.AppointmentDate >= now.Date &&
                            a.Status == AppointmentStatus.Confirmed)
                 .Include(a => a.Service)
                 .Include(a => a.User)
+                .AsNoTracking()
+                .ToListAsync(); 
+
+            // Сортируем в памяти
+            var sortedAppointments = appointments
+                .OrderBy(a => a.AppointmentDate)
+                .ThenBy(a => a.StartTime.Ticks) // Сортируем по тикам
+                .ToList();
+
+            return Ok(_mapper.Map<IEnumerable<DTO_Appointment.Response>>(sortedAppointments));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting upcoming appointments");
+            return StatusCode(500, "Internal server error");
+        }
+    }
+
+    /// <summary>
+    /// Получение списка предстоящих записей указанного пользователя
+    /// (Для администраторов и менеджеров)
+    /// </summary>
+    /// <param name="userId">ID пользователя</param>
+    /// <returns>Список записей пользователя</returns>
+    [HttpGet("user/{userId}")]
+    [Authorize(Roles = "Admin,Manager")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<IEnumerable<DTO_Appointment.Response>>> GetUserAppointments(int userId)
+    {
+        try
+        {
+            var now = DateTime.Now;
+            var appointments = await _context.Appointments
+                .Where(a => a.UserId == userId &&
+                           a.AppointmentDate >= now.Date &&
+                           a.Status == AppointmentStatus.Confirmed)
+                .Include(a => a.Service)
                 .OrderBy(a => a.AppointmentDate)
                 .ThenBy(a => a.StartTime)
                 .AsNoTracking()
@@ -157,7 +196,7 @@ public class AppointmentsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting upcoming appointments");
+            _logger.LogError(ex, "Error getting appointments for user {UserId}", userId);
             return StatusCode(500, "Internal server error");
         }
     }

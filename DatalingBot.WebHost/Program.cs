@@ -1,13 +1,18 @@
-﻿using DetalingBot.Infrastructure.Services;
+﻿using DatalingBot.WebHost.Services.Authentication;
+using DetalingBot.Infrastructure.Services;
 using DetalingBot.Mapping;
 using DetalingBot.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using System.Net.Http.Headers;
+using System.Text;
 using Telegram.Bot;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,6 +23,42 @@ builder.Host.UseSerilog((ctx, lc) =>
 
 // 2. Базовые сервисы
 builder.Services.AddControllers();
+builder.Services.AddHttpContextAccessor();
+
+var jwtKey = Environment.GetEnvironmentVariable("JWT_KEY")
+    ?? throw new ApplicationException("JWT_KEY environment variable not set");
+
+var jwtSettings = new JwtSettings
+{
+    Issuer = builder.Configuration["Jwt:Issuer"],
+    Audience = builder.Configuration["Jwt:Audience"],
+    Key = jwtKey,
+    ExpiryMinutes = builder.Configuration.GetValue<int>("Jwt:ExpiryMinutes")
+};
+
+builder.Services.AddSingleton(jwtSettings);
+
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidIssuer = jwtSettings.Issuer,
+        ValidateAudience = true,
+        ValidAudience = jwtSettings.Audience,
+        ValidateLifetime = true,
+        IssuerSigningKey = new SymmetricSecurityKey(
+            Encoding.UTF8.GetBytes(jwtSettings.Key)),
+        ValidateIssuerSigningKey = true,
+        ClockSkew = TimeSpan.Zero
+    };
+});
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddAutoMapper(typeof(MappingProfile));
@@ -47,6 +88,7 @@ builder.Services.AddScoped<IReviewService, ReviewService>();
 builder.Services.AddScoped<IServiceCatalogService, ServiceCatalogService>();
 builder.Services.AddScoped<IScheduleService, ScheduleService>();
 builder.Services.AddScoped<ITelegramMediaService, TelegramMediaService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
 
 // 5. Регистрация Telegram сервисов
 builder.Services.AddSingleton<ITelegramBotClient>(sp => new TelegramBotClient(builder.Configuration["Telegram:Token"] ??
@@ -63,6 +105,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseAuthentication(); 
 app.UseAuthorization();
 app.MapControllers();
 

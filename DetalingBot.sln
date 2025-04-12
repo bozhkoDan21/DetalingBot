@@ -3,7 +3,8 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.13.35825.156
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DetalingBot.Database", "DetalingBot.Database\DetalingBot.Database.csproj", "{CA1A5B81-CE81-4141-8B64-D73FC8F95B44}"EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DetalingBot.Database", "DetalingBot.Database\DetalingBot.Database.csproj", "{CA1A5B81-CE81-4141-8B64-D73FC8F95B44}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DatalingBot.WebHost", "DatalingBot.WebHost\DatalingBot.WebHost.csproj", "{CEE12CBA-2FA0-4A22-8C42-C523ADBC936A}"
 	ProjectSection(ProjectDependencies) = postProject
 		{101C33DA-AFCC-4223-A473-8C5E64A82F2E} = {101C33DA-AFCC-4223-A473-8C5E64A82F2E}
@@ -16,6 +17,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DetalingBot.Logger", "DetalingBot.Logger\DetalingBot.Logger.csproj", "{101C33DA-AFCC-4223-A473-8C5E64A82F2E}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DetalingBot.Mapping", "DetalingBot.Mapping\DetalingBot.Mapping.csproj", "{1EAD6CC6-0034-401C-82F2-854E4AD64D6C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DetalingBot.GenerateJwt", "DetalingBot.GenerateJwt\DetalingBot.GenerateJwt.csproj", "{DE8AA4CA-D49D-4CE4-B50D-5548E391071E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -43,6 +46,10 @@ Global
 		{1EAD6CC6-0034-401C-82F2-854E4AD64D6C}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1EAD6CC6-0034-401C-82F2-854E4AD64D6C}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1EAD6CC6-0034-401C-82F2-854E4AD64D6C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DE8AA4CA-D49D-4CE4-B50D-5548E391071E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DE8AA4CA-D49D-4CE4-B50D-5548E391071E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DE8AA4CA-D49D-4CE4-B50D-5548E391071E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DE8AA4CA-D49D-4CE4-B50D-5548E391071E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

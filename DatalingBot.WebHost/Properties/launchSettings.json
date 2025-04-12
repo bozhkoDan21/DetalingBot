@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "DatalingBot.WebHost": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "JWT_KEY": "5gnoQd3fP9bQU7taRSYe3mPrY4a/nao8cV41nXD+G58="
+      }
+    }
+  }
+}

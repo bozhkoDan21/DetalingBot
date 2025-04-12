@@ -7,6 +7,8 @@ using Microsoft.EntityFrameworkCore;
 using System.Net.Http.Json;
 using Telegram.Bot.Types.ReplyMarkups;
 using DetalingBot.Logger;
+using System.Net.Http.Headers;
+using DatalingBot.WebHost.Services.Authentication;
 
 /// <summary>
 /// Основной сервис для работы с Telegram ботом
@@ -22,6 +24,7 @@ public class TelegramBotService
     private readonly ITelegramMediaService _mediaService;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IReviewService _reviewService;
+    private readonly IAuthService _authService;
 
     /// <summary>
     /// Конструктор сервиса Telegram бота
@@ -34,7 +37,8 @@ public class TelegramBotService
         ITelegramNotificationService notificationService,
         ITelegramMediaService mediaService,
         IHttpClientFactory httpClientFactory,
-        IReviewService reviewService)
+        IReviewService reviewService,
+        IAuthService authService)
     {
         _dbContextFactory = dbContextFactory;
         _logger = logger;
@@ -44,6 +48,7 @@ public class TelegramBotService
         _httpClientFactory = httpClientFactory;
         _botClient = new TelegramBotClient(config["Telegram:Token"]);
         _reviewService = reviewService;
+        _authService = authService;
     }
 
     private bool _isRunning = false;
@@ -665,12 +670,39 @@ public class TelegramBotService
     /// <summary>
     /// Отображает предстоящие записи пользователя
     /// </summary>
+    /// <param name="chatId">ID чата Telegram</param>
+    /// <param name="userId">ID пользователя в системе</param>
+    /// <param name="ct">Токен отмены</param>
     private async Task ShowUserAppointments(long chatId, int userId, CancellationToken ct)
     {
         try
         {
-            var httpClient = _httpClientFactory.CreateClient();
-            var appointments = await httpClient.GetFromJsonAsync<List<Appointment>>($"api/appointments/upcoming?userId={userId}");
+            var httpClient = _httpClientFactory.CreateClient("ApiClient");
+
+            var token = _authService.GenerateJwtToken(userId);
+            httpClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", token);
+
+            // Добавляем логирование URL
+            var requestUrl = $"api/appointments/upcoming?userId={userId}";
+            _logger.LogInformation("Requesting appointments from: {RequestUrl}", requestUrl);
+
+            var response = await httpClient.GetAsync(requestUrl, ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogError("API error: {StatusCode} - {ErrorContent}",
+                    response.StatusCode, errorContent);
+
+                await _botClient.SendTextMessageAsync(
+                    chatId: chatId,
+                    text: "Сервис временно недоступен. Пожалуйста, попробуйте позже.",
+                    cancellationToken: ct);
+                return;
+            }
+
+            var appointments = await response.Content.ReadFromJsonAsync<List<DTO_Appointment.Response>>(cancellationToken: ct);
 
             if (appointments == null || !appointments.Any())
             {
@@ -681,28 +713,36 @@ public class TelegramBotService
                 return;
             }
 
-            var message = "Ваши предстоящие записи:\n\n" +
-                string.Join("\n\n", appointments.Select(a =>
-                    $"{a.Service.Name}\n" +
-                    $"Дата: {a.AppointmentDate:dd.MM.yyyy}\n" +
-                    $"Время: {a.StartTime:hh\\:mm}-{a.EndTime:hh\\:mm}\n" +
-                    $"Статус: {a.Status}"));
+            var message = "Ваши записи:\n" + string.Join("\n\n",
+                appointments.Select(a => $"""
+            🗓 <b>{a.ServiceName}</b>
+            📅 {a.Date:dd.MM.yyyy}
+            ⏰ {a.StartTime:hh\\:mm}-{a.EndTime:hh\\:mm}
+            """));
 
-            var buttons = new List<InlineKeyboardButton[]>
-            {
-                new[] { InlineKeyboardButton.WithCallbackData("❌ Отменить запись", $"cancel_{appointments[0].Id}") }
-            };
+            var buttons = appointments.Select(a =>
+                InlineKeyboardButton.WithCallbackData(
+                    $"❌ Отменить {a.Date:dd.MM}",
+                    $"cancel_{a.Id}"))
+                .Chunk(1)
+                .ToList();
+
+            buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("🔙 Назад", "back_to_main") });
 
             await _botClient.SendTextMessageAsync(
                 chatId: chatId,
                 text: message,
+                parseMode: ParseMode.Html,
                 replyMarkup: new InlineKeyboardMarkup(buttons),
                 cancellationToken: ct);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting user appointments");
-            await SendErrorMessage(chatId, ct);
+            _logger.LogError(ex, "Failed to get appointments for user {UserId}", userId);
+            await _botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: "Ошибка при загрузке записей. Попробуйте позже.",
+                cancellationToken: ct);
         }
     }
 
